@@ -3,50 +3,50 @@ const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Supplier = require('../models/Supplier');
 const Customer = require('../models/Customer');
-const Phone = require('../models/Phone');
+const Product = require('../models/Product');
+const InventoryEntry = require('../models/InventoryEntry');
+const Sale = require('../models/Sale');
 const Accessory = require('../models/Accessory');
 const Setting = require('../models/Setting');
 const Expense = require('../models/Expense');
 const MoneyReceipt = require('../models/MoneyReceipt');
 const MoneyPayment = require('../models/MoneyPayment');
-const PhoneSale = require('../models/PhoneSale');
-const PhonePurchase = require('../models/PhonePurchase');
 const History = require('../models/History');
 const Installment = require('../models/Installment');
 
 const seedData = async () => {
   try {
-    console.log('Clearing database and recreating indexes to avoid duplicate key issues...');
+    console.log('Clearing database and recreating indexes...');
 
     // Drop all data across all collections
     await User.deleteMany({});
     await Supplier.deleteMany({});
     await Customer.deleteMany({});
-    await Phone.deleteMany({});
+    await Product.deleteMany({});
+    await InventoryEntry.deleteMany({});
+    await Sale.deleteMany({});
     await Accessory.deleteMany({});
     await Setting.deleteMany({});
     await Expense.deleteMany({});
     await MoneyReceipt.deleteMany({});
     await MoneyPayment.deleteMany({});
-    await PhoneSale.deleteMany({});
-    await PhonePurchase.deleteMany({});
     await History.deleteMany({});
     await Installment.deleteMany({});
 
-    // Drop indexes of major collections to remove old/incorrect unique indexes (e.g. serialNumber unique constraint)
+    // Drop indexes safely
     const dropIndexSafely = async (model) => {
       try {
         await model.collection.dropIndexes();
       } catch (err) {
-        // Ignored if collection does not exist or has no indexes to drop
+        // Ignored
       }
     };
 
-    await dropIndexSafely(Phone);
+    await dropIndexSafely(Product);
+    await dropIndexSafely(InventoryEntry);
+    await dropIndexSafely(Sale);
     await dropIndexSafely(Accessory);
     await dropIndexSafely(Customer);
-    await dropIndexSafely(PhoneSale);
-    await dropIndexSafely(PhonePurchase);
     await dropIndexSafely(Installment);
 
     console.log('All collections cleared. Seeding fresh realistic demo data...');
@@ -103,7 +103,7 @@ const seedData = async () => {
       balance: 0
     });
 
-    // 4. Create 15 Demo Customers with Uzbekistan Phone Numbers
+    // 4. Create Customers
     const customerData = [
       { name: 'Jasur Alimov', phone: '+998901234501', email: 'jasur@mail.uz', balance: 0 },
       { name: 'Dilnoza Karimova', phone: '+998931234502', email: 'dilnoza@mail.uz', balance: 0 },
@@ -114,12 +114,7 @@ const seedData = async () => {
       { name: 'Farrux Tojiyev', phone: '+998909876507', email: 'farrux@mail.uz', balance: 0 },
       { name: 'Nigora Aslanova', phone: '+998939876508', email: 'nigora@mail.uz', balance: 0 },
       { name: 'Rustam Abdullayev', phone: '+998949876509', email: 'rustam@mail.uz', balance: 0 },
-      { name: 'Lobar Hoshimova', phone: '+998959876510', email: 'lobar@mail.uz', balance: 0 },
-      { name: 'Bekzod Toshpulotov', phone: '+998979876511', email: 'bekzod@mail.uz', balance: 0 },
-      { name: 'Kamola Ganiyeva', phone: '+998999876512', email: 'kamola@mail.uz', balance: 0 },
-      { name: 'Diyorbek Isaev', phone: '+998901112233', email: 'diyor@mail.uz', balance: 0 },
-      { name: 'Asal Axmedova', phone: '+998934445566', email: 'asal@mail.uz', balance: 0 },
-      { name: 'Ulugbek Yuldashev', phone: '+998947778899', email: 'ulugbek@mail.uz', balance: 0 }
+      { name: 'Lobar Hoshimova', phone: '+998959876510', email: 'lobar@mail.uz', balance: 0 }
     ];
 
     const customers = [];
@@ -128,110 +123,88 @@ const seedData = async () => {
       customers.push(created);
     }
 
-    // 5. Create Phones (10 Required Models + some sold ones)
-    // iPhone 13 128GB
-    const p1 = await Phone.create({
-      brand: 'Apple', model: 'iPhone 13', color: 'Midnight', storage: '128GB', ram: '4GB',
-      imei1: '358972109847001', imei2: '358972109847002', serialNumber: 'SN-IP13-001',
-      purchasePrice: 520, sellingPrice: 650, supplier: appleSupplier._id, status: 'In Stock',
-      condition: 'Used', purchaseInvoiceNumber: 'PINV-APP-01'
+    // 5. Create Products
+    const productsData = [
+      { name: 'iPhone 13', brand: 'Apple', storage: '128GB', condition: 'Used' },
+      { name: 'iPhone 14 Pro', brand: 'Apple', storage: '128GB', condition: 'Used' },
+      { name: 'iPhone 15 Pro Max', brand: 'Apple', storage: '256GB', condition: 'New' },
+      { name: 'Galaxy S24 Ultra', brand: 'Samsung', storage: '512GB', condition: 'New' },
+      { name: 'Galaxy A55', brand: 'Samsung', storage: '128GB', condition: 'New' },
+      { name: 'Note 14 Pro', brand: 'Redmi', storage: '256GB', condition: 'New' },
+      { name: '13', brand: 'Redmi', storage: '128GB', condition: 'New' },
+      { name: 'X7 Pro', brand: 'Poco', storage: '256GB', condition: 'New' },
+      { name: 'X9', brand: 'Honor', storage: '128GB', condition: 'Used' },
+      { name: 'Pixel 9', brand: 'Google', storage: '128GB', condition: 'New' },
+      { name: 'iPhone 13 Pro', brand: 'Apple', storage: '256GB', condition: 'Used' },
+      { name: 'Galaxy S23 Ultra', brand: 'Samsung', storage: '256GB', condition: 'Used' },
+      { name: 'iPhone 14 Pro Max', brand: 'Apple', storage: '256GB', condition: 'Used' }
+    ];
+
+    const products = {};
+    for (const p of productsData) {
+      const created = await Product.create(p);
+      products[p.name] = created;
+    }
+
+    const today = new Date();
+
+    // 6. Create Inventory Entries
+    const entriesData = [
+      { product: 'iPhone 13 Pro', qty: 5, price: 680, supplier: appleSupplier._id, date: new Date(today.getTime() - 10 * 24 * 60 * 60 * 1000) },
+      { product: 'Galaxy S23 Ultra', qty: 3, price: 820, supplier: samsungSupplier._id, date: new Date(today.getTime() - 8 * 24 * 60 * 60 * 1000) },
+      { product: 'iPhone 14 Pro Max', qty: 2, price: 900, supplier: appleSupplier._id, date: new Date(today.getTime() - 9 * 24 * 60 * 60 * 1000) },
+      { product: 'iPhone 13', qty: 10, price: 520, supplier: appleSupplier._id, date: new Date(today.getTime() - 10 * 24 * 60 * 60 * 1000) },
+      { product: 'iPhone 14 Pro', qty: 4, price: 780, supplier: appleSupplier._id, date: new Date(today.getTime() - 10 * 24 * 60 * 60 * 1000) },
+      { product: 'iPhone 15 Pro Max', qty: 5, price: 1050, supplier: appleSupplier._id, date: new Date(today.getTime() - 5 * 24 * 60 * 60 * 1000) },
+      { product: 'Galaxy S24 Ultra', qty: 6, price: 980, supplier: samsungSupplier._id, date: new Date(today.getTime() - 8 * 24 * 60 * 60 * 1000) },
+      { product: 'Galaxy A55', qty: 12, price: 310, supplier: samsungSupplier._id, date: new Date(today.getTime() - 8 * 24 * 60 * 60 * 1000) },
+      { product: 'Note 14 Pro', qty: 15, price: 240, supplier: genericSupplier._id, date: new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000) },
+      { product: '13', qty: 20, price: 130, supplier: genericSupplier._id, date: new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000) },
+      { product: 'X7 Pro', qty: 8, price: 290, supplier: genericSupplier._id, date: new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000) },
+      { product: 'X9', qty: 7, price: 190, supplier: genericSupplier._id, date: new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000) },
+      { product: 'Pixel 9', qty: 6, price: 650, supplier: genericSupplier._id, date: new Date(today.getTime() - 5 * 24 * 60 * 60 * 1000) }
+    ];
+
+    for (const ent of entriesData) {
+      await InventoryEntry.create({
+        productId: products[ent.product]._id,
+        quantity: ent.qty,
+        buyPrice: ent.price,
+        supplierId: ent.supplier,
+        createdBy: adminUser._id,
+        createdAt: ent.date,
+        updatedAt: ent.date
+      });
+    }
+
+    // 7. Seed Past Sales History
+    const sale1 = await Sale.create({
+      productId: products['iPhone 13 Pro']._id,
+      quantity: 1,
+      sellingPrice: 820,
+      buyPrice: 680,
+      customerId: customers[0]._id,
+      invoiceNumber: 'INV-20260703-1001',
+      paymentType: 'Cash',
+      paymentDetails: { cashAmount: 800, cardAmount: 0, transferAmount: 0 },
+      createdBy: employeeUser._id,
+      createdAt: new Date(today.getTime() - 4 * 24 * 60 * 60 * 1000)
     });
 
-    // iPhone 14 Pro 128GB
-    const p2 = await Phone.create({
-      brand: 'Apple', model: 'iPhone 14 Pro', color: 'Deep Purple', storage: '128GB', ram: '6GB',
-      imei1: '358972109847003', imei2: '358972109847004', serialNumber: 'SN-IP14P-002',
-      purchasePrice: 780, sellingPrice: 950, supplier: appleSupplier._id, status: 'In Stock',
-      condition: 'Used', purchaseInvoiceNumber: 'PINV-APP-01'
+    const sale2 = await Sale.create({
+      productId: products['Galaxy S23 Ultra']._id,
+      quantity: 1,
+      sellingPrice: 970,
+      buyPrice: 820,
+      customerId: customers[1]._id,
+      invoiceNumber: 'INV-20260705-1002',
+      paymentType: 'Card',
+      paymentDetails: { cashAmount: 0, cardAmount: 970, transferAmount: 0 },
+      createdBy: employeeUser._id,
+      createdAt: new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000)
     });
 
-    // iPhone 15 Pro Max 256GB
-    const p3 = await Phone.create({
-      brand: 'Apple', model: 'iPhone 15 Pro Max', color: 'Titanium Blue', storage: '256GB', ram: '8GB',
-      imei1: '358972109847005', imei2: '358972109847006', serialNumber: 'SN-IP15PM-003',
-      purchasePrice: 1050, sellingPrice: 1250, supplier: appleSupplier._id, status: 'In Stock',
-      condition: 'New', purchaseInvoiceNumber: 'PINV-APP-02'
-    });
-
-    // Samsung S24 Ultra
-    const p4 = await Phone.create({
-      brand: 'Samsung', model: 'Galaxy S24 Ultra', color: 'Titanium Yellow', storage: '512GB', ram: '12GB',
-      imei1: '357123984576001', imei2: '357123984576002', serialNumber: 'SN-S24U-001',
-      purchasePrice: 980, sellingPrice: 1200, supplier: samsungSupplier._id, status: 'In Stock',
-      condition: 'New', purchaseInvoiceNumber: 'PINV-SAM-01'
-    });
-
-    // Samsung A55
-    const p5 = await Phone.create({
-      brand: 'Samsung', model: 'Galaxy A55', color: 'Awesome Iceblue', storage: '128GB', ram: '8GB',
-      imei1: '357123984576003', imei2: '357123984576004', serialNumber: 'SN-A55-002',
-      purchasePrice: 310, sellingPrice: 390, supplier: samsungSupplier._id, status: 'In Stock',
-      condition: 'New', purchaseInvoiceNumber: 'PINV-SAM-01'
-    });
-
-    // Redmi Note 14 Pro
-    const p6 = await Phone.create({
-      brand: 'Redmi', model: 'Note 14 Pro', color: 'Forest Green', storage: '256GB', ram: '8GB',
-      imei1: '359123456789001', imei2: '359123456789002', serialNumber: 'SN-RN14P-001',
-      purchasePrice: 240, sellingPrice: 310, supplier: genericSupplier._id, status: 'In Stock',
-      condition: 'New', purchaseInvoiceNumber: 'PINV-GEN-01'
-    });
-
-    // Redmi 13
-    const p7 = await Phone.create({
-      brand: 'Redmi', model: '13', color: 'Ocean Blue', storage: '128GB', ram: '6GB',
-      imei1: '359123456789003', imei2: '359123456789004', serialNumber: 'SN-R13-002',
-      purchasePrice: 130, sellingPrice: 170, supplier: genericSupplier._id, status: 'In Stock',
-      condition: 'New', purchaseInvoiceNumber: 'PINV-GEN-01'
-    });
-
-    // Poco X7 Pro
-    const p8 = await Phone.create({
-      brand: 'Poco', model: 'X7 Pro', color: 'Poco Yellow', storage: '256GB', ram: '12GB',
-      imei1: '359123456789005', imei2: '359123456789006', serialNumber: 'SN-PX7P-001',
-      purchasePrice: 290, sellingPrice: 360, supplier: genericSupplier._id, status: 'In Stock',
-      condition: 'New', purchaseInvoiceNumber: 'PINV-GEN-02'
-    });
-
-    // Honor X9
-    const p9 = await Phone.create({
-      brand: 'Honor', model: 'X9', color: 'Midnight Black', storage: '128GB', ram: '8GB',
-      imei1: '355432109876001', imei2: '355432109876002', serialNumber: 'SN-HX9-001',
-      purchasePrice: 190, sellingPrice: 240, supplier: genericSupplier._id, status: 'In Stock',
-      condition: 'Used', purchaseInvoiceNumber: 'PINV-GEN-02'
-    });
-
-    // Google Pixel 9
-    const p10 = await Phone.create({
-      brand: 'Google', model: 'Pixel 9', color: 'Obsidian', storage: '128GB', ram: '12GB',
-      imei1: '353456789012001', imei2: '353456789012002', serialNumber: 'SN-GP9-001',
-      purchasePrice: 650, sellingPrice: 800, supplier: genericSupplier._id, status: 'In Stock',
-      condition: 'New', purchaseInvoiceNumber: 'PINV-GEN-03'
-    });
-
-    // Additional phones to represent SOLD status in history
-    const soldPhone1 = await Phone.create({
-      brand: 'Apple', model: 'iPhone 13 Pro', color: 'Sierra Blue', storage: '256GB', ram: '6GB',
-      imei1: '358972109847901', imei2: '358972109847902', serialNumber: 'SN-IP13P-SOLD1',
-      purchasePrice: 680, sellingPrice: 820, supplier: appleSupplier._id, status: 'Sold',
-      condition: 'Used', purchaseInvoiceNumber: 'PINV-APP-01'
-    });
-
-    const soldPhone2 = await Phone.create({
-      brand: 'Samsung', model: 'Galaxy S23 Ultra', color: 'Green', storage: '256GB', ram: '12GB',
-      imei1: '357123984576901', imei2: '357123984576902', serialNumber: 'SN-S23U-SOLD2',
-      purchasePrice: 820, sellingPrice: 970, supplier: samsungSupplier._id, status: 'Sold',
-      condition: 'Used', purchaseInvoiceNumber: 'PINV-SAM-01'
-    });
-
-    const soldPhone3 = await Phone.create({
-      brand: 'Apple', model: 'iPhone 14 Pro Max', color: 'Space Black', storage: '256GB', ram: '6GB',
-      imei1: '358972109847903', imei2: '358972109847904', serialNumber: 'SN-IP14PM-SOLD3',
-      purchasePrice: 900, sellingPrice: 1100, supplier: appleSupplier._id, status: 'Sold',
-      condition: 'Used', purchaseInvoiceNumber: 'PINV-APP-02'
-    });
-
-    // 6. Create Accessories (Charger, Adapter, Type-C Cable, Lightning Cable, Glass, Case, AirPods, Power Bank, Smart Watch)
+    // 8. Create Accessories
     await Accessory.create([
       { name: 'Apple 20W USB-C Power Adapter', category: 'Adapters', purchasePrice: 9, sellingPrice: 20, quantity: 40, supplier: appleSupplier._id, barcode: '190199535072', stockAlert: 5 },
       { name: 'Samsung 45W Travel Adapter', category: 'Adapters', purchasePrice: 14, sellingPrice: 30, quantity: 25, supplier: samsungSupplier._id, barcode: '880609014184', stockAlert: 5 },
@@ -244,98 +217,22 @@ const seedData = async () => {
       { name: 'Redmi Watch 4', category: 'Smart Watch', purchasePrice: 45, sellingPrice: 70, quantity: 8, supplier: genericSupplier._id, barcode: '694181275990', stockAlert: 2 }
     ]);
 
-    // 7. Seed Past Sales History (PhoneSale)
-    const today = new Date();
-    
-    // Invoices
-    const sale1 = await PhoneSale.create({
-      invoiceNumber: 'INV-20260703-1001',
-      customerName: customers[0].name,
-      phoneNumber: customers[0].phone,
-      customer: customers[0]._id,
-      phones: [{
-        phoneId: soldPhone1._id,
-        brand: 'Apple',
-        model: 'iPhone 13 Pro',
-        color: 'Sierra Blue',
-        storage: '256GB',
-        ram: '6GB',
-        imei1: '358972109847901',
-        serialNumber: 'SN-IP13P-SOLD1',
-        sellingPrice: 820,
-        purchasePrice: 680
-      }],
-      discount: 20,
-      totalAmount: 800,
-      profit: 120, // 800 - 680
-      paymentType: 'Cash',
-      paymentDetails: { cashAmount: 800, cardAmount: 0, transferAmount: 0 },
-      soldBy: employeeUser._id,
-      date: new Date(today.getTime() - 4 * 24 * 60 * 60 * 1000)
-    });
-
-    const sale2 = await PhoneSale.create({
-      invoiceNumber: 'INV-20260705-1002',
-      customerName: customers[1].name,
-      phoneNumber: customers[1].phone,
-      customer: customers[1]._id,
-      phones: [{
-        phoneId: soldPhone2._id,
-        brand: 'Samsung',
-        model: 'Galaxy S23 Ultra',
-        color: 'Green',
-        storage: '256GB',
-        ram: '12GB',
-        imei1: '357123984576901',
-        serialNumber: 'SN-S23U-SOLD2',
-        sellingPrice: 970,
-        purchasePrice: 820
-      }],
-      discount: 0,
-      totalAmount: 970,
-      profit: 150, // 970 - 820
-      paymentType: 'Card',
-      paymentDetails: { cashAmount: 0, cardAmount: 970, transferAmount: 0 },
-      soldBy: employeeUser._id,
-      date: new Date(today.getTime() - 2 * 24 * 60 * 60 * 1000)
-    });
-
-    // 8. Seed Purchase History (PhonePurchase)
-    await PhonePurchase.create({
-      supplier: appleSupplier._id,
-      invoiceNumber: 'PINV-APP-01',
-      totalAmount: 1980, // 520 (p1) + 780 (p2) + 680 (soldPhone1)
-      notes: 'Initial Apple batch',
-      createdBy: adminUser._id,
-      date: new Date(today.getTime() - 10 * 24 * 60 * 60 * 1000)
-    });
-
-    await PhonePurchase.create({
-      supplier: samsungSupplier._id,
-      invoiceNumber: 'PINV-SAM-01',
-      totalAmount: 2110, // 980 (p4) + 310 (p5) + 820 (soldPhone2)
-      notes: 'Initial Samsung batch',
-      createdBy: adminUser._id,
-      date: new Date(today.getTime() - 8 * 24 * 60 * 60 * 1000)
-    });
-
-    // 9. Seed Installments (Active, Overdue, PaidOff)
+    // 9. Seed Installments
     const firstPaymentBase = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
     // Installment 1: Active
-    const installment1_firstDate = new Date(firstPaymentBase.getTime() - 15 * 24 * 60 * 60 * 1000); // 15 days ago
+    const installment1_firstDate = new Date(firstPaymentBase.getTime() - 15 * 24 * 60 * 60 * 1000);
     const installment1_nextDate = new Date(installment1_firstDate);
-    installment1_nextDate.setMonth(installment1_nextDate.getMonth() + 1); // 15 days from now
+    installment1_nextDate.setMonth(installment1_nextDate.getMonth() + 1);
 
     await Installment.create({
       customerName: customers[2].name,
       customerPhone: customers[2].phone,
       customer: customers[2]._id,
       items: [{
-        itemType: 'Phone',
-        itemId: soldPhone3._id,
-        name: 'Apple iPhone 14 Pro Max',
-        imei: '358972109847903',
+        itemType: 'Product',
+        itemId: products['iPhone 14 Pro Max']._id,
+        name: 'Apple iPhone 14 Pro Max (x1)',
         sellingPrice: 1100,
         purchasePrice: 900
       }],
@@ -356,24 +253,23 @@ const seedData = async () => {
         receivedBy: employeeUser._id,
         receivedByName: employeeUser.name
       }],
-      totalPaid: 500, // 300 initial + 200 payment
+      totalPaid: 500,
       createdBy: employeeUser._id
     });
 
-    // Installment 2: Overdue (next payment date was 5 days ago, status is Overdue)
-    const installment2_firstDate = new Date(firstPaymentBase.getTime() - 35 * 24 * 60 * 60 * 1000); // 35 days ago
+    // Installment 2: Overdue
+    const installment2_firstDate = new Date(firstPaymentBase.getTime() - 35 * 24 * 60 * 60 * 1000);
     const installment2_nextDate = new Date(installment2_firstDate);
-    installment2_nextDate.setMonth(installment2_nextDate.getMonth() + 1); // was due 5 days ago
+    installment2_nextDate.setMonth(installment2_nextDate.getMonth() + 1);
 
     await Installment.create({
       customerName: customers[3].name,
       customerPhone: customers[3].phone,
       customer: customers[3]._id,
       items: [{
-        itemType: 'Phone',
-        itemId: p2._id, // link to an existing phone (just simulated as sold for modeling purposes)
-        name: 'Apple iPhone 14 Pro',
-        imei: '358972109847003',
+        itemType: 'Product',
+        itemId: products['iPhone 14 Pro']._id,
+        name: 'Apple iPhone 14 Pro (x1)',
         sellingPrice: 950,
         purchasePrice: 780
       }],
@@ -392,17 +288,16 @@ const seedData = async () => {
     });
 
     // Installment 3: PaidOff
-    const installment3_firstDate = new Date(firstPaymentBase.getTime() - 95 * 24 * 60 * 60 * 1000); // 95 days ago
+    const installment3_firstDate = new Date(firstPaymentBase.getTime() - 95 * 24 * 60 * 60 * 1000);
 
     await Installment.create({
       customerName: customers[4].name,
       customerPhone: customers[4].phone,
       customer: customers[4]._id,
       items: [{
-        itemType: 'Phone',
-        itemId: p1._id,
-        name: 'Apple iPhone 13',
-        imei: '358972109847001',
+        itemType: 'Product',
+        itemId: products['iPhone 13']._id,
+        name: 'Apple iPhone 13 (x1)',
         sellingPrice: 650,
         purchasePrice: 520
       }],
@@ -445,7 +340,7 @@ const seedData = async () => {
       { category: 'Food', amount: 15, description: 'Staff lunch', createdBy: employeeUser._id, date: new Date(today.getTime() - 1 * 24 * 60 * 60 * 1000) }
     ]);
 
-    // 11. Seed Cash In/Out transactions (MoneyReceipt / MoneyPayment)
+    // 11. Seed Cash In/Out transactions
     await MoneyReceipt.create({
       amount: 150,
       reason: 'Refund for accessory batch',

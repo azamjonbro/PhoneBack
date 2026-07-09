@@ -1,9 +1,9 @@
-const PhonePurchase = require('../models/PhonePurchase');
-const Phone = require('../models/Phone');
 const Supplier = require('../models/Supplier');
+const productService = require('../services/productService');
+const inventoryService = require('../services/inventoryService');
 const logActivity = require('../utils/historyLogger');
 
-// @desc    Receive phones (record new purchase invoice)
+// @desc    Receive phones (record new purchase invoice / entries)
 // @route   POST /api/purchases
 const receivePhones = async (req, res, next) => {
   try {
@@ -16,7 +16,7 @@ const receivePhones = async (req, res, next) => {
     }
 
     if (!phones || phones.length === 0) {
-      return res.status(400).json({ success: false, message: 'Phones list is required' });
+      return res.status(400).json({ success: false, message: 'Products list is required' });
     }
 
     // Resolve or find supplier (only if not buyback)
@@ -36,63 +36,42 @@ const receivePhones = async (req, res, next) => {
     }
 
     let totalAmount = 0;
-    const phoneInstances = [];
+    const entriesCreated = [];
 
     // Loop through phones to validate details and calculate total
-    for (const phoneItem of phones) {
+    for (const item of phones) {
       const {
-        imei1, imei2, model, purchasePrice, sellingPrice, condition, storage, color, clientName, clientPhone
-      } = phoneItem;
+        model, brand = 'Generic', purchasePrice, condition = 'Used', storage = '', quantity = 1, note = ''
+      } = item;
 
-      if (!imei1 || !model || !purchasePrice) {
+      if (!model || !purchasePrice || quantity <= 0) {
         return res.status(400).json({
           success: false,
-          message: `Each phone must have imei1, model, and purchasePrice`
+          message: `Each item must have model (product name), purchasePrice, and a valid quantity`
         });
       }
 
-      // Check if IMEI already exists
-      const existingPhone = await Phone.findOne({ imei1 });
-
-      if (existingPhone) {
-        return res.status(400).json({
-          success: false,
-          message: `Phone with IMEI ${imei1} already exists in inventory`
-        });
-      }
-
-      totalAmount += parseFloat(purchasePrice);
-      phoneInstances.push({
-        model,
-        imei1,
-        imei2: imei2 || '',
-        purchasePrice: parseFloat(purchasePrice),
-        sellingPrice: sellingPrice ? parseFloat(sellingPrice) : 0,
-        condition: condition || 'Used',
-        storage: storage || '',
-        color: color || '',
-        clientName: isBuyback ? customerName : (clientName || ''),
-        clientPhone: isBuyback ? customerPhone : (clientPhone || ''),
-        supplier: isBuyback ? null : supplier._id,
-        purchaseInvoiceNumber: isBuyback ? 'BUYBACK' : invoiceNumber,
-        status: 'In Stock'
+      // 1. Get or Create Product
+      const product = await productService.createOrGetProduct({
+        name: model,
+        brand,
+        storage,
+        condition
       });
+
+      // 2. Create Inventory Entry
+      const entry = await inventoryService.createEntry({
+        productId: product._id,
+        quantity: parseInt(quantity),
+        buyPrice: parseFloat(purchasePrice),
+        supplierId: isBuyback ? null : supplier?._id,
+        note: note || notes || '',
+        createdBy: req.user._id
+      });
+
+      totalAmount += parseFloat(purchasePrice) * parseInt(quantity);
+      entriesCreated.push(entry);
     }
-
-    // Create the Phone purchase history document
-    const phonePurchaseObj = await PhonePurchase.create({
-      supplier: isBuyback ? null : supplier._id,
-      invoiceNumber: isBuyback ? 'BUYBACK' : invoiceNumber,
-      customerName: isBuyback ? customerName : '',
-      customerPhone: isBuyback ? customerPhone : '',
-      phones: phoneInstances,
-      totalAmount,
-      notes: notes || '',
-      createdBy: req.user._id
-    });
-
-    // Bulk insert phone inventory
-    const createdPhones = await Phone.insertMany(phoneInstances);
 
     // Update Supplier outstanding balance (only if supplier invoice purchase)
     if (!isBuyback && supplier) {
@@ -103,30 +82,37 @@ const receivePhones = async (req, res, next) => {
     await logActivity({
       action: isBuyback ? 'Phone Buyback' : 'Phone Added',
       details: isBuyback
-        ? `Bought back ${createdPhones.length} phones from customer ${customerName} (Total paid: ${totalAmount})`
-        : `Received purchase invoice ${invoiceNumber} from ${supplier.name}: Added ${createdPhones.length} phones (Total cost: ${totalAmount})`,
+        ? `Bought back products from customer ${customerName} (Total paid: $${totalAmount})`
+        : `Received purchase invoice ${invoiceNumber} from ${supplier.name}: Added ${entriesCreated.length} product lines (Total cost: $${totalAmount})`,
       createdBy: req.user._id,
       username: req.user.username
     });
 
     res.status(201).json({
       success: true,
-      data: phonePurchaseObj,
-      phonesCreated: createdPhones.length
+      data: {
+        supplier: isBuyback ? null : supplier?._id,
+        invoiceNumber: isBuyback ? 'BUYBACK' : invoiceNumber,
+        customerName: isBuyback ? customerName : '',
+        customerPhone: isBuyback ? customerPhone : '',
+        totalAmount,
+        notes: notes || '',
+        createdBy: req.user._id
+      },
+      phonesCreated: entriesCreated.reduce((sum, e) => sum + e.quantity, 0)
     });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get all phone purchase logs
+// @desc    Get all phone purchase logs (aggregated from InventoryEntries)
 // @route   GET /api/purchases
 const getPurchases = async (req, res, next) => {
   try {
-    const purchases = await PhonePurchase.find()
-      .populate('supplier', 'name')
-      .sort({ date: -1 });
-    res.status(200).json({ success: true, data: purchases });
+    const entries = await inventoryService.getEntriesByProduct();
+    // We can group entries by date or format them for the UI
+    res.status(200).json({ success: true, data: entries });
   } catch (error) {
     next(error);
   }

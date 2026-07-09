@@ -1,313 +1,236 @@
-const Phone = require('../models/Phone');
+const productService = require('../services/productService');
+const inventoryService = require('../services/inventoryService');
+const Sale = require('../models/Sale');
+const Customer = require('../models/Customer');
 const logActivity = require('../utils/historyLogger');
 
-// @desc    Get all phones with pagination, filters, search
+// @desc    Get all products with stock quantity, filters, search
 // @route   GET /api/phones
 const getPhones = async (req, res, next) => {
   try {
-    const { page = 1, limit = 10, search, brand, status, color, sortBy = 'createdAt', order = 'desc' } = req.query;
+    const { page = 1, limit = 10, search, brand, condition, sortBy = 'createdAt', order = 'desc' } = req.query;
 
-    const query = {};
-
-    // Search query on imei1, imei2, serialNumber, brand, model
-    if (search) {
-      query.$or = [
-        { imei1: { $regex: search, $options: 'i' } },
-        { imei2: { $regex: search, $options: 'i' } },
-        { serialNumber: { $regex: search, $options: 'i' } },
-        { brand: { $regex: search, $options: 'i' } },
-        { model: { $regex: search, $options: 'i' } },
-        { clientName: { $regex: search, $options: 'i' } },
-        { clientPhone: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    if (brand) query.brand = brand;
-    if (status) query.status = status;
-    if (color) query.color = color;
-
-    const skipIndex = (page - 1) * limit;
-
-    const sortOption = {};
-    sortOption[sortBy] = order === 'asc' ? 1 : -1;
-
-    const total = await Phone.countDocuments(query);
-    const phones = await Phone.find(query)
-      .populate('supplier', 'name')
-      .sort(sortOption)
-      .limit(parseInt(limit))
-      .skip(skipIndex);
+    const result = await productService.getProductsWithStock({
+      page,
+      limit,
+      search,
+      brand,
+      condition,
+      sortBy,
+      order
+    });
 
     res.status(200).json({
       success: true,
-      count: phones.length,
-      total,
-      pages: Math.ceil(total / limit),
-      currentPage: parseInt(page),
-      data: phones
+      count: result.data.length,
+      total: result.total,
+      pages: result.pages,
+      currentPage: result.currentPage,
+      data: result.data
     });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get phone by id or imei
-// @route   GET /api/phones/:idOrImei
-const getPhoneByIdOrImei = async (req, res, next) => {
+// @desc    Get product by id
+// @route   GET /api/phones/:id
+const getPhoneById = async (req, res, next) => {
   try {
-    const { idOrImei } = req.params;
-    let phone;
-
-    // Check if idOrImei looks like a MongoDB ObjectId, otherwise search by imei1/serialNumber
-    if (idOrImei.match(/^[0-9a-fA-F]{24}$/)) {
-      phone = await Phone.findById(idOrImei).populate('supplier', 'name');
-    } else {
-      phone = await Phone.findOne({
-        $or: [{ imei1: idOrImei }, { serialNumber: idOrImei }]
-      }).populate('supplier', 'name');
+    const product = await productService.getProductById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
     }
-
-    if (!phone) {
-      return res.status(404).json({ success: false, message: 'Phone not found' });
-    }
-
-    res.status(200).json({ success: true, data: phone });
+    res.status(200).json({ success: true, data: product });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Create new phone
+// @desc    Create new Product and initial InventoryEntry
 // @route   POST /api/phones
 const createPhone = async (req, res, next) => {
   try {
-    const phone = await Phone.create(req.body);
+    const { name, brand, storage, condition, quantity, buyPrice, note } = req.body;
+
+    if (!name || !brand || !condition || quantity === undefined || buyPrice === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name, brand, condition, quantity and buy price are required'
+      });
+    }
+
+    // 1. Resolve or create product
+    const product = await productService.createOrGetProduct({
+      name,
+      brand,
+      storage,
+      condition
+    });
+
+    // 2. Create inventory entry
+    const entry = await inventoryService.createEntry({
+      productId: product._id,
+      quantity: parseInt(quantity),
+      buyPrice: parseFloat(buyPrice),
+      note: note || '',
+      createdBy: req.user._id
+    });
 
     await logActivity({
-      action: 'Phone Added',
-      details: `Added Phone: ${phone.brand} ${phone.model} (${phone.color}) - IMEI: ${phone.imei1}`,
+      action: 'Inventory Restocked',
+      details: `Added ${quantity} units of ${product.brand} ${product.name} @ $${buyPrice}`,
       createdBy: req.user._id,
       username: req.user.username
     });
 
-    res.status(201).json({ success: true, data: phone });
+    res.status(201).json({
+      success: true,
+      data: product,
+      entry
+    });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Update phone
+// @desc    Update Product info
 // @route   PUT /api/phones/:id
 const updatePhone = async (req, res, next) => {
   try {
-    let phone = await Phone.findById(req.id || req.params.id);
-    if (!phone) {
-      return res.status(404).json({ success: false, message: 'Phone not found' });
+    const product = await productService.updateProduct(req.params.id, req.body);
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    const oldStatus = phone.status;
-    phone = await Phone.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true
-    });
-
     await logActivity({
-      action: 'Phone Updated',
-      details: `Updated Phone ${phone.brand} ${phone.model}. Status: ${oldStatus} -> ${phone.status}`,
+      action: 'Product Updated',
+      details: `Updated product details for ${product.brand} ${product.name}`,
       createdBy: req.user._id,
       username: req.user.username
     });
 
-    res.status(200).json({ success: true, data: phone });
+    res.status(200).json({ success: true, data: product });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Delete phone
+// @desc    Delete product
 // @route   DELETE /api/phones/:id
 const deletePhone = async (req, res, next) => {
   try {
-    const phone = await Phone.findById(req.params.id);
-    if (!phone) {
-      return res.status(404).json({ success: false, message: 'Phone not found' });
+    const success = await productService.deleteProductIfEmpty(req.params.id);
+    if (!success) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot delete product that still has stock history or sales.'
+      });
     }
 
-    await phone.deleteOne();
-
     await logActivity({
-      action: 'Inventory Updated',
-      details: `Deleted Phone: ${phone.brand} ${phone.model} - IMEI: ${phone.imei1}`,
+      action: 'Product Deleted',
+      details: `Deleted product ID: ${req.params.id}`,
       createdBy: req.user._id,
       username: req.user.username
     });
 
-    res.status(200).json({ success: true, message: 'Phone removed from inventory' });
+    res.status(200).json({ success: true, message: 'Product removed from catalog' });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get autocomplete phone suggestions from previous purchases
+// @desc    Get autocomplete product suggestions
 // @route   GET /api/phones/suggestions
 const getPhoneSuggestions = async (req, res, next) => {
   try {
-    const { search = '' } = req.query;
-
-    if (!search || search.trim().length < 1) {
-      return res.status(200).json({ success: true, suggestions: [] });
-    }
-
-    const searchRegex = new RegExp(search.trim(), 'i');
-
-    const suggestions = await Phone.aggregate([
-      // Match by model/brand/color/storage/ram
-      {
-        $match: {
-          $or: [
-            { model: { $regex: searchRegex } },
-            { brand: { $regex: searchRegex } }
-          ]
-        }
-      },
-      // Sort newest first to ensure $first gives the latest purchase details
-      { $sort: { createdAt: -1 } },
-      // Group by lowercase model name
-      {
-        $group: {
-          _id: { $toLower: '$model' },
-          productName: { $first: '$model' },
-          brand: { $first: '$brand' },
-          model: { $first: '$model' },
-          lastPurchasePrice: { $first: '$purchasePrice' },
-          purchasePrices: { $push: '$purchasePrice' },
-          lastSellingPrice: { $first: '$sellingPrice' },
-          lastPurchaseDate: { $first: '$createdAt' },
-          purchaseCount: { $sum: 1 },
-          storage: { $first: '$storage' },
-          color: { $first: '$color' },
-          stock: {
-            $sum: {
-              $cond: [{ $eq: ['$status', 'In Stock'] }, 1, 0]
-            }
-          },
-          soldCount: {
-            $sum: {
-              $cond: [{ $eq: ['$status', 'Sold'] }, 1, 0]
-            }
-          }
-        }
-      },
-      // Calculate average price
-      {
-        $addFields: {
-          averagePurchasePrice: { $avg: '$purchasePrices' }
-        }
-      },
-      // Sort by newest purchase, popularity, name
-      {
-        $sort: {
-          lastPurchaseDate: -1,
-          purchaseCount: -1,
-          productName: 1
-        }
-      },
-      { $limit: 8 },
-      {
-        $project: {
-          _id: 0,
-          productName: 1,
-          brand: 1,
-          model: 1,
-          lastPurchasePrice: 1,
-          averagePurchasePrice: { $round: ['$averagePurchasePrice', 2] },
-          lastSellingPrice: 1,
-          stock: 1,
-          purchaseCount: 1,
-          soldCount: 1,
-          lastPurchaseDate: 1,
-          storage: 1,
-          color: 1
-        }
-      }
-    ]);
-
-    res.status(200).json({
-      success: true,
-      suggestions
-    });
+    const suggestions = await productService.getSuggestions(req.query.search);
+    res.status(200).json({ success: true, suggestions });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get autocomplete customer suggestions from previous sales/purchases
+// @desc    Get customer suggestions
 // @route   GET /api/phones/customers
 const getCustomerSuggestions = async (req, res, next) => {
   try {
     const { search = '' } = req.query;
-
     if (!search || search.trim().length < 1) {
       return res.status(200).json({ success: true, customers: [] });
     }
 
     const searchRegex = new RegExp(search.trim(), 'i');
 
-    const phoneClients = await Phone.aggregate([
-      {
-        $match: {
-          clientName: { $regex: searchRegex }
-        }
-      },
-      {
-        $group: {
-          _id: { $toLower: '$clientName' },
-          name: { $first: '$clientName' },
-          phone: { $first: '$clientPhone' },
-          lastActivity: { $max: '$createdAt' }
-        }
-      }
-    ]);
+    const customerSuggestions = await Customer.find({
+      $or: [
+        { name: searchRegex },
+        { phone: searchRegex }
+      ]
+    }).limit(10);
 
-    const PhoneSale = require('../models/PhoneSale');
-    const saleClients = await PhoneSale.aggregate([
-      {
-        $match: {
-          customerName: { $regex: searchRegex }
-        }
-      },
-      {
-        $group: {
-          _id: { $toLower: '$customerName' },
-          name: { $first: '$customerName' },
-          phone: { $first: '$phoneNumber' },
-          lastActivity: { $max: '$createdAt' }
-        }
-      }
-    ]);
+    const suggestions = customerSuggestions.map(c => ({
+      name: c.name,
+      phone: c.phone || ''
+    }));
 
-    const map = new Map();
-    [...phoneClients, ...saleClients].forEach(c => {
-      if (!c.name) return;
-      const key = c.name.toLowerCase().trim();
-      const existing = map.get(key);
-      if (!existing || new Date(c.lastActivity) > new Date(existing.lastActivity)) {
-        map.set(key, c);
-      }
+    res.status(200).json({ success: true, customers: suggestions });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get all inventory entries for a product
+// @route   GET /api/phones/:id/entries
+const getProductEntries = async (req, res, next) => {
+  try {
+    const entries = await inventoryService.getEntriesByProduct(req.params.id);
+    res.status(200).json({ success: true, data: entries });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update a specific inventory entry
+// @route   PUT /api/phones/entries/:entryId
+const updateInventoryEntry = async (req, res, next) => {
+  try {
+    const entry = await inventoryService.updateEntry(req.params.entryId, req.body);
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Inventory entry not found' });
+    }
+
+    await logActivity({
+      action: 'Inventory Entry Updated',
+      details: `Updated entry ${req.params.entryId}. New qty: ${entry.quantity}, Price: $${entry.buyPrice}`,
+      createdBy: req.user._id,
+      username: req.user.username
     });
 
-    const suggestions = Array.from(map.values())
-      .sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity))
-      .slice(0, 10)
-      .map(c => ({
-        name: c.name,
-        phone: c.phone || ''
-      }));
+    res.status(200).json({ success: true, data: entry });
+  } catch (error) {
+    next(error);
+  }
+};
 
-    res.status(200).json({
-      success: true,
-      customers: suggestions
+// @desc    Delete a specific inventory entry
+// @route   DELETE /api/phones/entries/:entryId
+const deleteInventoryEntry = async (req, res, next) => {
+  try {
+    const entry = await inventoryService.deleteEntry(req.params.entryId);
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Inventory entry not found' });
+    }
+
+    await logActivity({
+      action: 'Inventory Entry Deleted',
+      details: `Deleted entry ${req.params.entryId} of quantity ${entry.quantity}`,
+      createdBy: req.user._id,
+      username: req.user.username
     });
+
+    res.status(200).json({ success: true, message: 'Inventory entry deleted' });
   } catch (error) {
     next(error);
   }
@@ -315,10 +238,13 @@ const getCustomerSuggestions = async (req, res, next) => {
 
 module.exports = {
   getPhones,
-  getPhoneByIdOrImei,
+  getPhoneById,
   createPhone,
   updatePhone,
   deletePhone,
   getPhoneSuggestions,
-  getCustomerSuggestions
+  getCustomerSuggestions,
+  getProductEntries,
+  updateInventoryEntry,
+  deleteInventoryEntry
 };

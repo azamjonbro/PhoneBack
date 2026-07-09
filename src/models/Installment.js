@@ -32,7 +32,7 @@ const InstallmentPaymentSchema = new mongoose.Schema({
 const InstallmentItemSchema = new mongoose.Schema({
   itemType: {
     type: String,
-    enum: ['Phone', 'Accessory'],
+    enum: ['Product', 'Accessory'],
     required: true
   },
   itemId: {
@@ -41,10 +41,6 @@ const InstallmentItemSchema = new mongoose.Schema({
     refPath: 'items.itemType'
   },
   name: {
-    type: String,
-    trim: true
-  },
-  imei: {
     type: String,
     trim: true
   },
@@ -128,7 +124,7 @@ const InstallmentSchema = new mongoose.Schema({
   },
   saleId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'PhoneSale'
+    ref: 'Sale'
   }
 }, {
   timestamps: true

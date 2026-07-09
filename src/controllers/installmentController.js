@@ -1,8 +1,10 @@
 const Installment = require('../models/Installment');
-const Phone = require('../models/Phone');
+const Product = require('../models/Product');
 const Accessory = require('../models/Accessory');
-const PhoneSale = require('../models/PhoneSale');
+const Sale = require('../models/Sale');
 const Customer = require('../models/Customer');
+const productService = require('../services/productService');
+const saleService = require('../services/saleService');
 const logActivity = require('../utils/historyLogger');
 
 // @desc    Get all installments with search/filter/pagination
@@ -24,8 +26,7 @@ const getInstallments = async (req, res, next) => {
       query.$or = [
         { customerName: searchRegex },
         { customerPhone: searchRegex },
-        { 'items.name': searchRegex },
-        { 'items.imei': searchRegex }
+        { 'items.name': searchRegex }
       ];
     }
 
@@ -96,9 +97,10 @@ const createInstallment = async (req, res, next) => {
     const {
       customerName,
       customerPhone,
-      phoneIds = [],
-      sellingPrices = {},    // { phoneId: manualSellingPrice } - manually entered prices
-      accessoryItems = [],   // [{ accessoryId, quantity }]
+      phoneIds = [],       // Array of Product ObjectIds
+      sellingPrices = {},  // { productId: manualSellingPrice }
+      quantities = {},     // { productId: quantity }
+      accessoryItems = [], // [{ accessoryId, quantity }]
       initialPayment = 0,
       numberOfMonths,
       firstPaymentDate,
@@ -119,67 +121,78 @@ const createInstallment = async (req, res, next) => {
     }
 
     if (phoneIds.length === 0 && accessoryItems.length === 0) {
-      return res.status(400).json({ success: false, message: 'At least one phone or accessory is required' });
+      return res.status(400).json({ success: false, message: 'At least one product or accessory is required' });
     }
 
     // Resolve or create customer
-    let customer;
-    customer = await Customer.findOne({ phone: customerPhone });
+    let customer = await Customer.findOne({ phone: customerPhone });
     if (!customer) {
       customer = await Customer.create({ name: customerName, phone: customerPhone });
     }
 
-    // Resolve phones
     const items = [];
-    const phoneSnapshots = [];
+    const itemSnapshots = [];
     let totalSellingPrice = 0;
+    let totalCost = 0;
 
+    // Generate Invoice Number
+    const today = new Date();
+    const dateStr = today.getFullYear().toString() +
+      (today.getMonth() + 1).toString().padStart(2, '0') +
+      today.getDate().toString().padStart(2, '0');
+    const rand = Math.floor(1000 + Math.random() * 9000);
+    const invoiceNumber = `INV-${dateStr}-${rand}`;
+
+    // 1. Resolve products
     if (phoneIds.length > 0) {
-      const phones = await Phone.find({ _id: { $in: phoneIds } });
-      if (phones.length !== phoneIds.length) {
-        return res.status(400).json({ success: false, message: 'One or more selected phones are invalid' });
+      const products = await Product.find({ _id: { $in: phoneIds } });
+      if (products.length !== phoneIds.length) {
+        return res.status(400).json({ success: false, message: 'One or more selected products are invalid' });
       }
 
-      const outOfStock = phones.filter(p => p.status !== 'In Stock');
-      if (outOfStock.length > 0) {
-        const names = outOfStock.map(p => `${p.brand} ${p.model} (IMEI: ${p.imei1})`).join(', ');
-        return res.status(400).json({
-          success: false,
-          message: `The following phones are not available: ${names}`
-        });
-      }
-
-      for (const phone of phones) {
-        const manualPrice = sellingPrices[phone._id.toString()];
+      for (const product of products) {
+        const productId = product._id.toString();
+        const qty = parseInt(quantities[productId] || 1);
+        const manualPrice = sellingPrices[productId];
         const finalSellingPrice = (manualPrice !== undefined && manualPrice !== null)
           ? parseFloat(manualPrice)
-          : phone.sellingPrice;
+          : (product.sellingPrice || 0);
 
-        totalSellingPrice += finalSellingPrice;
+        // Check stock levels
+        const stockResult = await productService.getProductsWithStock({ search: '', brand: product.brand });
+        const aggregatedProduct = stockResult.data.find(p => p._id.toString() === productId);
+        const availableStock = aggregatedProduct ? aggregatedProduct.quantity : 0;
+
+        if (availableStock < qty) {
+          return res.status(400).json({
+            success: false,
+            message: `Not enough stock for ${product.brand} ${product.name}. Available: ${availableStock}, Requested: ${qty}`
+          });
+        }
+
+        const buyPrice = await saleService.getWeightedAverageBuyPrice(productId);
+
+        totalSellingPrice += finalSellingPrice * qty;
+        totalCost += buyPrice * qty;
+
         items.push({
-          itemType: 'Phone',
-          itemId: phone._id,
-          name: `${phone.brand || ''} ${phone.model || ''}`.trim() || 'Unknown Phone',
-          imei: phone.imei1,
-          sellingPrice: finalSellingPrice,
-          purchasePrice: phone.purchasePrice
+          itemType: 'Product',
+          itemId: product._id,
+          name: `${product.brand || ''} ${product.name || ''} (x${qty})`.trim(),
+          sellingPrice: finalSellingPrice * qty,
+          purchasePrice: buyPrice * qty
         });
-        phoneSnapshots.push({
-          phoneId: phone._id,
-          brand: phone.brand,
-          model: phone.model,
-          color: phone.color,
-          storage: phone.storage,
-          ram: phone.ram,
-          imei1: phone.imei1,
-          serialNumber: phone.serialNumber,
+
+        itemSnapshots.push({
+          productId: product._id,
+          quantity: qty,
           sellingPrice: finalSellingPrice,
-          purchasePrice: phone.purchasePrice
+          buyPrice
         });
       }
     }
 
-    // Resolve accessories
+    // 2. Resolve accessories
     if (accessoryItems.length > 0) {
       for (const accItem of accessoryItems) {
         const accessory = await Accessory.findById(accItem.accessoryId);
@@ -195,11 +208,12 @@ const createInstallment = async (req, res, next) => {
         }
         const itemTotal = accessory.sellingPrice * qty;
         totalSellingPrice += itemTotal;
+        totalCost += accessory.purchasePrice * qty;
+
         items.push({
           itemType: 'Accessory',
           itemId: accessory._id,
           name: `${accessory.name} (x${qty})`,
-          imei: null,
           sellingPrice: itemTotal,
           purchasePrice: accessory.purchasePrice * qty
         });
@@ -217,43 +231,25 @@ const createInstallment = async (req, res, next) => {
     const monthlyPayment = Math.ceil((remainingDebt / parseInt(numberOfMonths)) * 100) / 100;
     const firstDate = new Date(firstPaymentDate);
 
-    // Generate Invoice Number
-    const today = new Date();
-    const dateStr = today.getFullYear().toString() +
-      (today.getMonth() + 1).toString().padStart(2, '0') +
-      today.getDate().toString().padStart(2, '0');
-    const rand = Math.floor(1000 + Math.random() * 9000);
-    const invoiceNumber = `INV-${dateStr}-${rand}`;
-
-    // Create PhoneSale record (for history/reports consistency)
-    const totalCost = items.reduce((sum, i) => sum + (i.purchasePrice || 0), 0);
-    const profit = totalPrice - totalCost;
-
-    const phoneSale = await PhoneSale.create({
-      invoiceNumber,
-      customerName: customer.name,
-      phoneNumber: customer.phone,
-      customer: customer._id,
-      phones: phoneSnapshots,
-      discount: parseFloat(discount),
-      totalAmount: totalPrice,
-      profit,
-      paymentType: 'Installment',
-      paymentDetails: {
-        cashAmount: parsedInitial,
-        cardAmount: 0,
-        transferAmount: 0
-      },
-      soldBy: req.user._id,
-      date: new Date()
-    });
-
-    // Update phone statuses to Sold
-    if (phoneIds.length > 0) {
-      await Phone.updateMany(
-        { _id: { $in: phoneIds } },
-        { $set: { status: 'Sold' } }
-      );
+    // Create Sale records for the products (for history/reports consistency)
+    const createdSales = [];
+    for (const snap of itemSnapshots) {
+      const saleRecord = await saleService.createSale({
+        productId: snap.productId,
+        quantity: snap.quantity,
+        sellingPrice: snap.sellingPrice,
+        customerId: customer._id,
+        note: notes || '',
+        invoiceNumber,
+        paymentType: 'Installment',
+        paymentDetails: {
+          cashAmount: parsedInitial,
+          cardAmount: 0,
+          transferAmount: 0
+        },
+        createdBy: req.user._id
+      });
+      createdSales.push(saleRecord);
     }
 
     // Update accessory quantities
@@ -282,7 +278,7 @@ const createInstallment = async (req, res, next) => {
       payments: [],
       totalPaid: parsedInitial,
       createdBy: req.user._id,
-      saleId: phoneSale._id
+      saleId: createdSales[0]?._id // link to the sale trace
     });
 
     // Log activity
@@ -298,8 +294,7 @@ const createInstallment = async (req, res, next) => {
       success: true,
       data: {
         installment,
-        invoiceNumber,
-        phoneSale
+        invoiceNumber
       }
     });
   } catch (error) {
@@ -354,13 +349,11 @@ const receivePayment = async (req, res, next) => {
       installment.status = 'PaidOff';
       installment.nextPaymentDate = null;
     } else {
-      // Calculate next payment date (one month from current nextPaymentDate)
       const currentNext = new Date(installment.nextPaymentDate || new Date());
       const newNext = new Date(currentNext);
       newNext.setMonth(newNext.getMonth() + 1);
       installment.nextPaymentDate = newNext;
 
-      // Check if overdue
       if (newNext < new Date()) {
         installment.status = 'Overdue';
       } else {
@@ -370,7 +363,6 @@ const receivePayment = async (req, res, next) => {
 
     await installment.save();
 
-    // Log activity
     await logActivity({
       action: 'Installment Payment Received',
       details: `Received $${paymentAmount} from ${installment.customerName} (${method}). Remaining: $${installment.remainingDebt}`,
@@ -398,20 +390,15 @@ const getInstallmentStats = async (req, res, next) => {
       { $set: { status: 'Overdue' } }
     );
 
-    // Active installments count
     const activeInstallments = await Installment.countDocuments({ status: 'Active' });
-
-    // Overdue installments count
     const overdueInstallments = await Installment.countDocuments({ status: 'Overdue' });
 
-    // Total remaining debt (active + overdue)
     const debtAgg = await Installment.aggregate([
       { $match: { status: { $in: ['Active', 'Overdue'] } } },
       { $group: { _id: null, total: { $sum: '$remainingDebt' } } }
     ]);
     const totalInstallmentDebt = debtAgg[0]?.total || 0;
 
-    // Today's installment payments
     const todayPaymentsAgg = await Installment.aggregate([
       { $unwind: '$payments' },
       { $match: { 'payments.date': { $gte: todayStart, $lte: todayEnd } } },
@@ -419,7 +406,6 @@ const getInstallmentStats = async (req, res, next) => {
     ]);
     const todayInstallmentPayments = todayPaymentsAgg[0]?.total || 0;
 
-    // This month's collected amount
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
     const monthPaymentsAgg = await Installment.aggregate([
@@ -429,7 +415,6 @@ const getInstallmentStats = async (req, res, next) => {
     ]);
     const monthlyCollected = monthPaymentsAgg[0]?.total || 0;
 
-    // Payments due today
     const dueTodayCount = await Installment.countDocuments({
       status: { $in: ['Active', 'Overdue'] },
       nextPaymentDate: { $gte: todayStart, $lte: todayEnd }
@@ -472,7 +457,6 @@ const getInstallmentReport = async (req, res, next) => {
       .populate('createdBy', 'name username')
       .sort({ createdAt: -1 });
 
-    // Summary stats
     const totalCount = installments.length;
     const activeCount = installments.filter(i => i.status === 'Active').length;
     const paidOffCount = installments.filter(i => i.status === 'PaidOff').length;

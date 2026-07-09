@@ -1,5 +1,7 @@
 node_modules/
-.env.log/
-.env.dev
 .env/
+.env.log/
+.env.dev/
+.env.test/
+.env.prod/
 .env.example
